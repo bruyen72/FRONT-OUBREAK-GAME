@@ -364,6 +364,7 @@ class WebAgarGame {
     this.remotePlayers = [];
     this.remoteBots = [];
     this.remoteFoods = [];
+    this.onlineFxPrimed = false;
     this.mySocketId = '';
     this.qPressed = false;
     this.spectateTargetId = '';
@@ -556,14 +557,16 @@ class WebAgarGame {
   }
 
   disconnectSocket() {
-    if (!this.socket) return;
-    this.socket.removeAllListeners();
-    this.socket.disconnect();
-    this.socket = null;
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
+    }
     this.connectionStatus = '';
     this.remotePlayers = [];
     this.remoteBots = [];
     this.remoteFoods = [];
+    this.onlineFxPrimed = false;
     this.mySocketId = '';
     this.qPressed = false;
     this.player.turbo = false;
@@ -646,6 +649,59 @@ class WebAgarGame {
     };
   }
 
+  applyOnlineVisualEffects(prevFoods, nextFoods, prevEntities, nextEntities, myId = '') {
+    if (this.state !== 'PLAYING' || this.pauseMenuOpen) return;
+    if (!Array.isArray(prevFoods) || !Array.isArray(nextFoods)) return;
+    if (!Array.isArray(prevEntities) || !Array.isArray(nextEntities)) return;
+    if (prevFoods.length === 0 && prevEntities.length === 0) return;
+
+    const nextFoodIds = new Set(nextFoods.map((food) => String(food.id)));
+    const maxFoodFx = 26;
+    let foodFxCount = 0;
+    for (const food of prevFoods) {
+      if (foodFxCount >= maxFoodFx) break;
+      if (!food || nextFoodIds.has(String(food.id))) continue;
+
+      let eater = null;
+      let bestDist = Number.POSITIVE_INFINITY;
+      for (const entity of nextEntities) {
+        if (!entity) continue;
+        const reach = Math.max(20, toNumberOr(entity.r, 20) * 1.08);
+        const d = dist(food.x, food.y, entity.x, entity.y);
+        if (d <= reach && d < bestDist) {
+          bestDist = d;
+          eater = entity;
+        }
+      }
+
+      if (eater) this.foodBoom(food.x, food.y, food.color, eater.r);
+      else this.spawnParticles(food.x, food.y, food.color, 2, 1.8, 1);
+      foodFxCount += 1;
+    }
+
+    const nextEntityById = new Map(nextEntities.map((entity) => [String(entity.id), entity]));
+    const removed = [];
+    for (const entity of prevEntities) {
+      if (!entity) continue;
+      const id = String(entity.id);
+      if (!id || nextEntityById.has(id)) continue;
+      if (myId && id === myId && this.state !== 'PLAYING') continue;
+      removed.push(entity);
+    }
+
+    if (removed.length > 0 && removed.length <= 8) {
+      for (const entity of removed) {
+        this.eatExplosion(
+          entity.x,
+          entity.y,
+          normalizeColorArray(entity.color1, [220, 220, 255]),
+          true,
+          Number.isFinite(entity.type) ? entity.type : 0,
+        );
+      }
+    }
+  }
+
   resolveCurrentPlayer(socketId) {
     if (!Array.isArray(this.remotePlayers) || this.remotePlayers.length === 0) return null;
 
@@ -687,6 +743,7 @@ class WebAgarGame {
     this.particles = [];
     this.shockwaves = [];
     this.connectionStatus = 'Conectando ao servidor...';
+    this.onlineFxPrimed = false;
     this.spectateTargetId = '';
     this.spectateTargetName = '';
     this.spectateLastSwitchTime = this.time;
@@ -713,6 +770,11 @@ class WebAgarGame {
     });
 
     socket.on('state_update', (payload = {}) => {
+      const prevFoods = Array.isArray(this.remoteFoods) ? [...this.remoteFoods] : [];
+      const prevEntities = [
+        ...(Array.isArray(this.remotePlayers) ? this.remotePlayers : []),
+        ...(Array.isArray(this.remoteBots) ? this.remoteBots : []),
+      ];
       const playersFromServer = toEntityArray(firstDefined(payload.players, payload.p));
       const botsFromServer = toEntityArray(firstDefined(payload.bots, payload.b));
       const foodsFromServer = firstDefined(payload.foods, payload.f);
@@ -753,8 +815,20 @@ class WebAgarGame {
         this.remoteFoods = this.remoteFoods.filter((food) => !eatenIds.has(String(food.id)));
       }
 
-      this.foods = this.remoteFoods;
       const currentSocketId = this.mySocketId || socket.id || '';
+      if (this.onlineFxPrimed) {
+        this.applyOnlineVisualEffects(
+          prevFoods,
+          this.remoteFoods,
+          prevEntities,
+          [...incomingPlayers, ...incomingBots],
+          currentSocketId,
+        );
+      } else {
+        this.onlineFxPrimed = true;
+      }
+
+      this.foods = this.remoteFoods;
       this.bots = [
         ...this.remoteBots,
         ...this.remotePlayers.filter((player) => !this.isSameRemoteId(player, currentSocketId)),
@@ -803,6 +877,7 @@ class WebAgarGame {
       this.mouseX = this.width / 2;
       this.mouseY = this.height / 2;
       this.connectionStatus = '';
+      this.onlineFxPrimed = false;
       this.spectateTargetId = '';
       this.spectateTargetName = '';
       this.spectateLastSwitchTime = this.time;
@@ -1797,6 +1872,17 @@ class WebAgarGame {
     } else if (!this.connectionStatus) {
       this.player.turbo = false;
       this.connectionStatus = 'Aguardando sincronizacao...';
+    }
+
+    if (!paused && this.state === 'PLAYING' && this.player.turbo && this.player.mass > 1.05 && Math.random() < 0.92) {
+      this.spawnParticles(this.player.x, this.player.y, [0, 180, 255], 2, 0, 4);
+      if (this.particles.length > 0) {
+        const p = this.particles[this.particles.length - 1];
+        p.size = randomFloat(16, 34);
+        p.decay = 0.04;
+      }
+      if (Math.random() < 0.75) this.spawnParticles(this.player.x, this.player.y, [180, 100, 255], 1, 0, 5);
+      if (Math.random() < 0.5) this.spawnParticles(this.player.x, this.player.y, [120, 220, 255], 1, 0, 5);
     }
 
     this.foods = this.remoteFoods;
