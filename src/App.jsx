@@ -701,14 +701,14 @@ class WebAgarGame {
   normalizeIncomingFxEvent(event) {
     if (!event || typeof event !== 'object') return null;
     const kindRaw = String(firstDefined(event.kind, event.fxType, event.event, event.fx, '')).toLowerCase();
-    const kind = (kindRaw === 'food' || kindRaw === 'eat') ? kindRaw : '';
+    const kind = (kindRaw === 'food' || kindRaw === 'eat' || kindRaw === 'turbo') ? kindRaw : '';
     if (!kind) return null;
 
     const x = toNumberOr(firstDefined(event.x, event.px), Number.NaN);
     const y = toNumberOr(firstDefined(event.y, event.py), Number.NaN);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
 
-    const fallbackColor = kind === 'food' ? FOOD_COLORS[0] : [220, 220, 255];
+    const fallbackColor = kind === 'food' ? FOOD_COLORS[0] : (kind === 'turbo' ? [0, 180, 255] : [220, 220, 255]);
     const color = normalizeColorArray(firstDefined(event.color, event.c, event.rgb), fallbackColor);
 
     return {
@@ -717,14 +717,16 @@ class WebAgarGame {
       y: clamp(y, 0, WORLD),
       color,
       eaterId: String(firstDefined(event.eaterId, event.by, event.killerId, '')),
+      actorId: String(firstDefined(event.actorId, event.id, event.playerId, '')),
       eaterRadius: Math.max(0, toNumberOr(firstDefined(event.eaterRadius, event.eaterR, event.r), 0)),
+      mass: Math.max(0, toNumberOr(firstDefined(event.mass, event.m), 0)),
       skinId: clamp(Math.round(toNumberOr(firstDefined(event.skinId, event.type), 0)), 0, PLAYER_SKINS.length - 1),
       big: firstDefined(event.big, true) !== false,
     };
   }
 
   applyOnlineServerEffects(fxEvents, nextEntities = []) {
-    if (this.state !== 'PLAYING' || this.pauseMenuOpen) return;
+    if (!(this.state === 'PLAYING' || this.state === 'SPECTATING') || this.pauseMenuOpen) return;
     if (!Array.isArray(fxEvents) || fxEvents.length === 0) return;
 
     const entityById = new Map();
@@ -735,7 +737,8 @@ class WebAgarGame {
       entityById.set(id, entity);
     }
 
-    const maxFx = this.isMobile ? 36 : 62;
+    const myId = this.mySocketId || this.socket?.id || '';
+    const maxFx = this.isMobile ? 54 : 96;
     let applied = 0;
     for (const fx of fxEvents) {
       if (applied >= maxFx) break;
@@ -759,6 +762,22 @@ class WebAgarGame {
           fx.big,
           Number.isFinite(fx.skinId) ? fx.skinId : 0,
         );
+        applied += 1;
+        continue;
+      }
+
+      if (fx.kind === 'turbo') {
+        if (fx.actorId && myId && fx.actorId === myId) continue;
+        const turboMass = Math.max(1, toNumberOr(fx.mass, 1));
+        const intensity = clamp(0.85 + turboMass / 210, 0.85, 2.8);
+        const count = this.isMobile ? 2 : 3;
+        this.spawnParticles(fx.x, fx.y, fx.color, Math.max(1, Math.round(count * intensity)), 0, 4);
+        if (this.particles.length > 0) {
+          const p = this.particles[this.particles.length - 1];
+          p.size = randomFloat(14, 32) * Math.min(1.6, 0.9 + intensity * 0.26);
+          p.decay = randomFloat(0.032, 0.05);
+        }
+        if (Math.random() < 0.66) this.spawnParticles(fx.x, fx.y, blendColors(fx.color, [180, 100, 255], 0.3), 1, 0, 5);
         applied += 1;
       }
     }
