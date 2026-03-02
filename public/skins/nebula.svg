@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="45%" cy="35%" r="70%">
+      <stop offset="0%" stop-color="#b8d7ff" />
+      <stop offset="35%" stop-color="#5b86ff" />
+      <stop offset="75%" stop-color="#2a3d97" />
+      <stop offset="100%" stop-color="#131b3f" />
+    </radialGradient>
+    <radialGradient id="cloud1" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#f4ffff" stop-opacity="0.65" />
+      <stop offset="100%" stop-color="#8c7bff" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="cloud2" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#8ffbff" stop-opacity="0.5" />
+      <stop offset="100%" stop-color="#46a4ff" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)" />
+  <circle cx="180" cy="170" r="160" fill="url(#cloud1)" />
+  <circle cx="325" cy="290" r="170" fill="url(#cloud2)" />
+  <g fill="#ffffff" opacity="0.95">
+    <circle cx="95" cy="112" r="4" />
+    <circle cx="140" cy="246" r="3" />
+    <circle cx="218" cy="90" r="5" />
+    <circle cx="274" cy="192" r="3" />
+    <circle cx="330" cy="115" r="4" />
+    <circle cx="384" cy="230" r="3" />
+    <circle cx="425" cy="155" r="5" />
+    <circle cx="104" cy="328" r="4" />
+    <circle cx="170" cy="390" r="3" />
+    <circle cx="254" cy="350" r="5" />
+    <circle cx="320" cy="412" r="4" />
+    <circle cx="404" cy="348" r="3" />
+  </g>
+</svg>
