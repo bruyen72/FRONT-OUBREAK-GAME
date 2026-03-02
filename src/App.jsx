@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+﻿import { useState, useRef, useEffect } from 'react';
 import { io } from 'socket.io-client';
 import Galaxy from './Galaxy';
 const WORLD = 3000;
@@ -9,6 +9,9 @@ const NUM_FOOD = 450;
 const FOOD_MASS_GAIN = 0.2;
 const PLAYER_ABSORB_MULT = 0.35;
 const BOT_ABSORB_MULT = 0.3;
+const TURBO_DRAIN_MIN_PER_SEC = 0.35;
+const TURBO_DRAIN_RATIO_PER_SEC = 0.012;
+const TURBO_DRAIN_MAX_PER_SEC = 6000;
 const MIN_CAMERA_ZOOM = 0.22;
 const MAX_CAMERA_ZOOM = 1.2;
 const MOBILE_LAYOUT_BREAKPOINT = 980;
@@ -63,6 +66,11 @@ const MAX_CELL_RADIUS = WORLD * 0.5 - WORLD_EDGE_MARGIN;
 const MAX_CELL_MASS = radiusToMass(MAX_CELL_RADIUS);
 const clampCellRadius = (radius) => clamp(Number.isFinite(radius) ? radius : 8, 8, MAX_CELL_RADIUS);
 const clampCellMass = (mass) => clamp(Number.isFinite(mass) ? mass : 1, 1, MAX_CELL_MASS);
+const computeTurboMassDrainPerSec = (mass) => clamp(
+  Math.max(0, toNumberOr(mass, 1)) * TURBO_DRAIN_RATIO_PER_SEC,
+  TURBO_DRAIN_MIN_PER_SEC,
+  TURBO_DRAIN_MAX_PER_SEC,
+);
 const firstDefined = (...values) => {
   for (const value of values) {
     if (value !== undefined && value !== null) return value;
@@ -306,7 +314,8 @@ class Player extends Cell {
     const stopRadius = this.r * lerp(0.52, 0.16, sens01);
     if (this.turbo && this.mass > 1.05) {
       speed *= 2.3;
-      this.shrink(0.05);
+      const turboDrain = computeTurboMassDrainPerSec(this.mass) * FIXED_STEP;
+      this.shrink(turboDrain);
     }
 
     if (d > stopRadius) {
@@ -345,7 +354,7 @@ class WebAgarGame {
     this.cam = new Camera();
     this.playerNick = 'VOCE';
     this.skinIdx = 0;
-    // States: DASHBOARD, PLAYING, GAMEOVER, SPECTATING
+    // States: DASHBOARD, PLAYING, GAMEOVER, VICTORY, SPECTATING
     this.state = 'DASHBOARD';
     this.playMode = PLAY_MODES.OFFLINE;
     this.time = 0;
@@ -358,6 +367,11 @@ class WebAgarGame {
     this.shakeMax = 0;
     this.dashboardStars = this.buildDashboardStars();
     this.victoryPulse = 0;
+    this.winnerName = '';
+    this.winnerSkinId = 0;
+    this.winnerColor1 = [0, 255, 179];
+    this.winnerColor2 = [0, 171, 255];
+    this.winnerCustomImage = null;
     this.hoverInfo = { left: false, right: false, upload: false, byUrl: false, clearSkin: false, offline: false, online: false, onlineBots: false };
     this.socket = null;
     this.connectionStatus = '';
@@ -365,6 +379,7 @@ class WebAgarGame {
     this.remoteBots = [];
     this.remoteFoods = [];
     this.onlineFxPrimed = false;
+    this.onlineHadOpponents = false;
     this.mySocketId = '';
     this.qPressed = false;
     this.spectateTargetId = '';
@@ -567,6 +582,7 @@ class WebAgarGame {
     this.remoteBots = [];
     this.remoteFoods = [];
     this.onlineFxPrimed = false;
+    this.onlineHadOpponents = false;
     this.mySocketId = '';
     this.qPressed = false;
     this.player.turbo = false;
@@ -574,6 +590,7 @@ class WebAgarGame {
     this.mobileTurboTouchId = null;
     this.mobileMoveTouchId = null;
     this.resetMobileMoveStick();
+    this.resetWinnerData();
   }
 
   isSameRemoteId(entity, socketId) {
@@ -744,6 +761,7 @@ class WebAgarGame {
     this.shockwaves = [];
     this.connectionStatus = 'Conectando ao servidor...';
     this.onlineFxPrimed = false;
+    this.onlineHadOpponents = false;
     this.spectateTargetId = '';
     this.spectateTargetName = '';
     this.spectateLastSwitchTime = this.time;
@@ -751,6 +769,7 @@ class WebAgarGame {
     this.mobileTurboTouchId = null;
     this.mobileMoveTouchId = null;
     this.resetMobileMoveStick();
+    this.resetWinnerData();
 
     const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
     this.socket = socket;
@@ -885,6 +904,7 @@ class WebAgarGame {
       this.mobileTurboTouchId = null;
       this.mobileMoveTouchId = null;
       this.resetMobileMoveStick();
+      this.resetWinnerData();
       this.disconnectSocket();
       this.initializeWorld();
       return;
@@ -1238,11 +1258,16 @@ class WebAgarGame {
     if (!event.changedTouches || event.changedTouches.length === 0) return;
     this.ensureAudioContext();
 
-    if (this.state === 'DASHBOARD' || this.pauseMenuOpen) {
+    if (
+      this.state === 'DASHBOARD'
+      || this.pauseMenuOpen
+      || this.state === 'GAMEOVER'
+      || this.state === 'VICTORY'
+    ) {
       const touch = event.changedTouches[0];
       this.updatePointerFromClient(touch.clientX, touch.clientY);
       event.preventDefault();
-      this.onMouseDown({ button: 0 });
+      this.onMouseDown({ button: 0, clientX: touch.clientX, clientY: touch.clientY });
       return;
     }
 
@@ -1324,7 +1349,7 @@ class WebAgarGame {
 
   onMouseDown(event) {
     if (event.button !== 0) return;
-    this.updatePointerFromClient(event.clientX, event.clientY);
+    if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) this.updatePointerFromClient(event.clientX, event.clientY);
     this.ensureAudioContext();
 
     if ((this.state === 'PLAYING' || this.state === 'SPECTATING') && this.isMobile) {
@@ -1337,6 +1362,21 @@ class WebAgarGame {
 
     if (this.pauseMenuOpen && (this.state === 'PLAYING' || this.state === 'SPECTATING')) {
       this.handlePauseMenuClick(this.mouseX, this.mouseY);
+      return;
+    }
+
+    if (this.state === 'GAMEOVER') {
+      this.handleGameOverClick();
+      return;
+    }
+
+    if (this.state === 'VICTORY') {
+      this.handleVictoryClick();
+      return;
+    }
+
+    if (this.state === 'SPECTATING') {
+      this.handleSpectatingClick();
       return;
     }
 
@@ -1378,6 +1418,32 @@ class WebAgarGame {
       this.state = 'DASHBOARD';
       this.playMode = PLAY_MODES.OFFLINE;
       return;
+    }
+  }
+
+  handleVictoryClick() {
+    const layout = this.getGameOverLayout();
+    const cx = this.width / 2;
+    const cy = layout.rowY;
+    const btnW = layout.btnW;
+    const btnH = layout.btnH;
+    const gap = layout.gap;
+    const playAgainX = cx - btnW - gap / 2;
+    const menuX = cx + gap / 2;
+    const mx = this.mouseX;
+    const my = this.mouseY;
+
+    if (mx >= playAgainX && mx <= playAgainX + btnW && my >= cy && my <= cy + btnH) {
+      const nextMode = this.playMode;
+      if (nextMode !== PLAY_MODES.OFFLINE) this.disconnectSocket();
+      this.startMatch(nextMode);
+      return;
+    }
+
+    if (mx >= menuX && mx <= menuX + btnW && my >= cy && my <= cy + btnH) {
+      if (this.playMode !== PLAY_MODES.OFFLINE) this.disconnectSocket();
+      this.state = 'DASHBOARD';
+      this.playMode = PLAY_MODES.OFFLINE;
     }
   }
 
@@ -1424,7 +1490,8 @@ class WebAgarGame {
         this.togglePauseMenu();
         return;
       }
-      if (this.state === 'GAMEOVER') {
+      if (this.state === 'GAMEOVER' || this.state === 'VICTORY') {
+        if (this.playMode !== PLAY_MODES.OFFLINE) this.disconnectSocket();
         this.state = 'DASHBOARD';
         this.playMode = PLAY_MODES.OFFLINE;
       }
@@ -1605,6 +1672,38 @@ class WebAgarGame {
     this.spectateTargetId = '';
     this.spectateTargetName = '';
     this.spectateLastSwitchTime = this.time;
+  }
+
+  resetWinnerData() {
+    this.winnerName = '';
+    this.winnerSkinId = 0;
+    this.winnerColor1 = [0, 255, 179];
+    this.winnerColor2 = [0, 171, 255];
+    this.winnerCustomImage = null;
+  }
+
+  startVictory(winner = this.player) {
+    const winnerName = typeof winner?.name === 'string' && winner.name.trim().length > 0
+      ? winner.name.trim().slice(0, 16)
+      : 'VOCE';
+    const winnerSkinId = clamp(
+      Math.round(toNumberOr(firstDefined(winner?.skinId, winner?.type), this.skinIdx)),
+      0,
+      PLAYER_SKINS.length - 1,
+    );
+    const winnerSkin = PLAYER_SKINS[winnerSkinId] || PLAYER_SKINS[0];
+
+    this.qPressed = false;
+    this.player.turbo = false;
+    this.pauseMenuOpen = false;
+    this.state = 'VICTORY';
+    this.connectionStatus = '';
+    this.winnerName = winnerName;
+    this.winnerSkinId = winnerSkinId;
+    this.winnerColor1 = normalizeColorArray(firstDefined(winner?.color1, winnerSkin.c1), winnerSkin.c1);
+    this.winnerColor2 = normalizeColorArray(firstDefined(winner?.color2, winnerSkin.c2), winnerSkin.c2);
+    this.winnerCustomImage = winner === this.player && this.customSkinImage ? this.customSkinImage : null;
+    this.victoryPulse = 0;
   }
 
   getEntityPower(entity) {
@@ -1794,10 +1893,24 @@ class WebAgarGame {
 
     if (this.state === 'PLAYING') {
       if (!paused && this.checkCollisions()) return;
+      if (!paused && this.bots.length === 0) {
+        this.startVictory(this.player);
+        return;
+      }
       const minZoom = this.getAdaptiveMinZoomForRadius(this.player.r);
       const targetZoom = clamp(0.8 * (80 / this.player.r), minZoom, MAX_CAMERA_ZOOM);
       this.cam.update(this.player.x, this.player.y, targetZoom);
-    } else {
+      return;
+    }
+
+    if (this.state === 'VICTORY') {
+      const minZoom = this.getAdaptiveMinZoomForRadius(this.player.r);
+      const targetZoom = clamp(0.78 * (80 / this.player.r), minZoom, MAX_CAMERA_ZOOM);
+      this.cam.update(this.player.x, this.player.y, targetZoom);
+      return;
+    }
+
+    {
       const focus = this.getSpectateFocus();
       const focusRadius = massToRadius(focus.mass);
       const minZoom = this.getAdaptiveMinZoomForRadius(focusRadius);
@@ -1840,7 +1953,7 @@ class WebAgarGame {
       return;
     }
 
-    if (!paused && this.socket && this.socket.connected) {
+    if (!paused && this.state === 'PLAYING' && this.socket && this.socket.connected) {
       this.socket.emit('player_input', {
         mouseX: wx,
         mouseY: wy,
@@ -1896,12 +2009,20 @@ class WebAgarGame {
       ...updatedRemotePlayers,
     ];
 
+    if (this.state === 'PLAYING') {
+      const opponentsCount = this.bots.length;
+      if (opponentsCount > 0) this.onlineHadOpponents = true;
+      if (this.onlineHadOpponents && opponentsCount === 0) {
+        this.startVictory(this.player);
+      }
+    }
+
     for (const p of this.particles) p.update();
     for (const sw of this.shockwaves) sw.update();
     this.particles = this.particles.filter((p) => p.alive());
     this.shockwaves = this.shockwaves.filter((sw) => sw.alive());
 
-    if (this.state !== 'PLAYING') {
+    if (this.state === 'SPECTATING') {
       const focus = this.getSpectateFocus();
       const focusRadius = massToRadius(focus.mass);
       const minZoom = this.getAdaptiveMinZoomForRadius(focusRadius);
@@ -1911,6 +2032,19 @@ class WebAgarGame {
   }
 
   updatePlayingStep() {
+    if (this.state === 'VICTORY') {
+      this.qPressed = false;
+      this.player.turbo = false;
+      for (const p of this.particles) p.update();
+      for (const sw of this.shockwaves) sw.update();
+      this.particles = this.particles.filter((p) => p.alive());
+      this.shockwaves = this.shockwaves.filter((sw) => sw.alive());
+      const minZoom = this.getAdaptiveMinZoomForRadius(this.player.r);
+      const targetZoom = clamp(0.78 * (80 / this.player.r), minZoom, MAX_CAMERA_ZOOM);
+      this.cam.update(this.player.x, this.player.y, targetZoom);
+      return;
+    }
+
     if (this.playMode === PLAY_MODES.OFFLINE) {
       this.updateOfflineStep();
       return;
@@ -2951,6 +3085,97 @@ class WebAgarGame {
     });
   }
 
+  drawVictoryOverlay() {
+    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+    this.ctx.fillRect(0, 0, this.width, this.height);
+
+    const layout = this.getGameOverLayout();
+    const compact = layout.compact;
+    const cx = this.width / 2;
+    const cy = this.height / 2;
+
+    this.ctx.textAlign = 'center';
+    this.ctx.textBaseline = 'middle';
+    this.ctx.fillStyle = 'rgb(118, 255, 214)';
+    this.ctx.font = `900 ${compact ? 42 : 62}px ${TITLE_FONT_FAMILY}`;
+    this.ctx.fillText('VITORIA', cx, cy - (compact ? 104 : 124));
+
+    const winnerName = (this.winnerName || 'VOCE').slice(0, 16);
+    this.ctx.fillStyle = 'rgba(228, 244, 255, 0.98)';
+    this.ctx.font = `800 ${compact ? 16 : 22}px ${UI_FONT_FAMILY}`;
+    this.ctx.fillText(`CAMPEAO: ${winnerName}`, cx, cy - (compact ? 62 : 74));
+
+    const previewR = compact ? 46 : 62;
+    const previewY = cy - (compact ? 4 : 12);
+    const winnerImage = (this.winnerCustomImage && this.winnerCustomImage.complete && this.winnerCustomImage.naturalWidth > 0)
+      ? this.winnerCustomImage
+      : this.getSkinImageByIndex(this.winnerSkinId);
+
+    this.ctx.save();
+    this.ctx.beginPath();
+    this.ctx.arc(cx, previewY, previewR, 0, Math.PI * 2);
+    this.ctx.clip();
+
+    if (winnerImage) {
+      this.ctx.drawImage(winnerImage, cx - previewR, previewY - previewR, previewR * 2, previewR * 2);
+      const shade = this.ctx.createRadialGradient(cx - previewR * 0.35, previewY - previewR * 0.35, previewR * 0.08, cx, previewY, previewR);
+      shade.addColorStop(0, 'rgba(255, 255, 255, 0.22)');
+      shade.addColorStop(1, 'rgba(0, 0, 0, 0.24)');
+      this.ctx.fillStyle = shade;
+      this.ctx.beginPath();
+      this.ctx.arc(cx, previewY, previewR, 0, Math.PI * 2);
+      this.ctx.fill();
+    } else {
+      const g = this.ctx.createRadialGradient(cx - previewR * 0.32, previewY - previewR * 0.34, previewR * 0.1, cx, previewY, previewR);
+      g.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+      g.addColorStop(0.35, colorToCss(this.winnerColor1, 1));
+      g.addColorStop(1, colorToCss(this.winnerColor2, 0.92));
+      this.ctx.fillStyle = g;
+      this.ctx.beginPath();
+      this.ctx.arc(cx, previewY, previewR, 0, Math.PI * 2);
+      this.ctx.fill();
+    }
+    this.ctx.restore();
+
+    this.ctx.strokeStyle = 'rgba(198, 242, 255, 0.88)';
+    this.ctx.lineWidth = compact ? 2 : 3;
+    this.ctx.beginPath();
+    this.ctx.arc(cx, previewY, previewR, 0, Math.PI * 2);
+    this.ctx.stroke();
+
+    this.ctx.fillStyle = 'rgba(190, 226, 246, 0.95)';
+    this.ctx.font = `700 ${compact ? 13 : 16}px ${UI_FONT_FAMILY}`;
+    this.ctx.fillText(`PONTOS: ${this.player.score}`, cx, cy + (compact ? 56 : 58));
+
+    const btnW = layout.btnW;
+    const btnH = layout.btnH;
+    const gap = layout.gap;
+    const mx = this.mouseX;
+    const my = this.mouseY;
+
+    const playAgainX = cx - btnW - gap / 2;
+    const hoverPlayAgain = mx >= playAgainX && mx <= playAgainX + btnW && my >= layout.rowY && my <= layout.rowY + btnH;
+    this.drawDashboardButton({
+      x: playAgainX, y: layout.rowY, w: btnW, h: btnH,
+      label: 'JOGAR DE NOVO', subtitle: '', hover: hoverPlayAgain,
+      palette: {
+        top: 'rgba(30, 116, 154, 0.93)', bottom: 'rgba(16, 72, 106, 0.95)', border: 'rgba(122, 222, 255, 0.85)',
+        hoverTop: 'rgba(44, 152, 196, 0.97)', hoverBottom: 'rgba(24, 98, 142, 0.97)', hoverBorder: 'rgba(188, 244, 255, 0.95)', hoverGlow: 'rgba(188, 244, 255, 0.4)'
+      }
+    });
+
+    const menuX = cx + gap / 2;
+    const hoverMenu = mx >= menuX && mx <= menuX + btnW && my >= layout.rowY && my <= layout.rowY + btnH;
+    this.drawDashboardButton({
+      x: menuX, y: layout.rowY, w: btnW, h: btnH,
+      label: 'MENU', subtitle: '', hover: hoverMenu,
+      palette: {
+        top: 'rgba(116, 45, 132, 0.93)', bottom: 'rgba(78, 28, 96, 0.95)', border: 'rgba(225, 142, 250, 0.84)',
+        hoverTop: 'rgba(148, 56, 170, 0.97)', hoverBottom: 'rgba(98, 36, 118, 0.97)', hoverBorder: 'rgba(245, 188, 255, 0.95)', hoverGlow: 'rgba(245, 188, 255, 0.42)'
+      }
+    });
+  }
+
   drawSpectatingOverlay() {
     const menuBtn = this.getMobileMenuButton();
     const y = this.isMobile ? menuBtn.y + menuBtn.h + 6 : 18;
@@ -3202,6 +3427,8 @@ class WebAgarGame {
 
     if (this.state === 'GAMEOVER') {
       this.drawGameOverOverlay();
+    } else if (this.state === 'VICTORY') {
+      this.drawVictoryOverlay();
     } else if (this.state === 'SPECTATING') {
       this.drawSpectatingOverlay();
     }
@@ -3249,16 +3476,8 @@ export default function App() {
       setGameState((prev) => (prev === game.state ? prev : game.state));
     }, 200);
 
-    const overrideMouseDown = (e) => {
-      if (e.button !== 0) return;
-      if (game.state === 'GAMEOVER') game.handleGameOverClick();
-      else if (game.state === 'SPECTATING') game.handleSpectatingClick();
-    };
-    window.addEventListener('mousedown', overrideMouseDown);
-
     return () => {
       clearInterval(interval);
-      window.removeEventListener('mousedown', overrideMouseDown);
       game.destroy();
       gameRef.current = null;
     };
@@ -3285,3 +3504,4 @@ export default function App() {
     </div>
   );
 }
+
