@@ -12,7 +12,9 @@ const BOT_ABSORB_MULT = 0.3;
 const MIN_CAMERA_ZOOM = 0.22;
 const MAX_CAMERA_ZOOM = 1.2;
 const MOBILE_LAYOUT_BREAKPOINT = 980;
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3000';
+const normalizeSocketUrl = (url) => String(url || '').trim().replace(/\/+$/, '');
+const socketEnvUrl = normalizeSocketUrl(import.meta.env.VITE_SOCKET_URL);
+const SOCKET_URL = socketEnvUrl || (import.meta.env.DEV ? 'http://localhost:3000' : '');
 const PLAY_MODES = {
   OFFLINE: 'offline',
   ONLINE: 'online',
@@ -660,6 +662,14 @@ class WebAgarGame {
   }
 
   startOnlineMatch(mode) {
+    if (!SOCKET_URL) {
+      alert('Servidor online nao configurado. Defina VITE_SOCKET_URL no frontend (Vercel).');
+      this.connectionStatus = '';
+      this.state = 'DASHBOARD';
+      this.playMode = PLAY_MODES.OFFLINE;
+      return;
+    }
+
     const finalName = this.playerNick.trim().length > 0 ? this.playerNick.trim() : 'Player';
     this.playMode = mode;
     this.state = 'PLAYING';
@@ -752,7 +762,7 @@ class WebAgarGame {
     });
 
     socket.on('connect_error', () => {
-      alert('Falha de conexao com o servidor online.');
+      alert(`Falha de conexao com o servidor online (${SOCKET_URL}). Verifique VITE_SOCKET_URL.`);
       this.disconnectSocket();
       this.state = 'DASHBOARD';
       this.playMode = PLAY_MODES.OFFLINE;
