@@ -6,12 +6,15 @@ const FPS = 60;
 const FIXED_STEP = 1 / FPS;
 const NUM_BOTS = 45;
 const NUM_FOOD = 450;
-const FOOD_MASS_GAIN = 0.2;
+const FOOD_MASS_GAIN_BASE = 0.12;
+const FOOD_MASS_GAIN_MIN = 0.01;
+const FOOD_MASS_GAIN_MASS_FACTOR = 0.06;
 const PLAYER_ABSORB_MULT = 0.35;
 const BOT_ABSORB_MULT = 0.3;
-const TURBO_DRAIN_MIN_PER_SEC = 0.35;
-const TURBO_DRAIN_RATIO_PER_SEC = 0.012;
-const TURBO_DRAIN_MAX_PER_SEC = 6000;
+const TURBO_DRAIN_MIN_PER_SEC = 1.2;
+const TURBO_DRAIN_RATIO_PER_SEC = 0.05;
+const TURBO_DRAIN_MAX_PER_SEC = 20000;
+const TURBO_SCORE_DRAIN_PER_MASS = 120;
 const MIN_CAMERA_ZOOM = 0.22;
 const MAX_CAMERA_ZOOM = 1.2;
 const MOBILE_LAYOUT_BREAKPOINT = 980;
@@ -66,6 +69,11 @@ const MAX_CELL_RADIUS = WORLD * 0.5 - WORLD_EDGE_MARGIN;
 const MAX_CELL_MASS = radiusToMass(MAX_CELL_RADIUS);
 const clampCellRadius = (radius) => clamp(Number.isFinite(radius) ? radius : 8, 8, MAX_CELL_RADIUS);
 const clampCellMass = (mass) => clamp(Number.isFinite(mass) ? mass : 1, 1, MAX_CELL_MASS);
+const computeFoodMassGain = (mass) => {
+  const safeMass = Math.max(1, toNumberOr(mass, 1));
+  const scaledGain = FOOD_MASS_GAIN_BASE / (1 + safeMass * FOOD_MASS_GAIN_MASS_FACTOR);
+  return Math.max(FOOD_MASS_GAIN_MIN, scaledGain);
+};
 const computeTurboMassDrainPerSec = (mass) => clamp(
   Math.max(0, toNumberOr(mass, 1)) * TURBO_DRAIN_RATIO_PER_SEC,
   TURBO_DRAIN_MIN_PER_SEC,
@@ -133,6 +141,7 @@ class Particle {
 
   constructor(x, y, color, power, type = 0) {
     this.x = x; this.y = y; this.color = color; this.type = type;
+    this.prevX = x; this.prevY = y;
     if (type === 5) {
       this.life = 1; this.decay = randomFloat(0.12, 0.25); this.size = 1; this.segs = [];
       let angle = randomFloat(0, Math.PI * 2);
@@ -150,6 +159,20 @@ class Particle {
       this.vx = 0; this.vy = 0; this.angle = 0; this.spin = 0; this.gravity = 0;
       return;
     }
+    if (type === 6) {
+      const a = randomFloat(0, Math.PI * 2);
+      const s = randomFloat(Math.max(4, power * 0.7), Math.max(8, power * 1.4));
+      this.vx = Math.cos(a) * s;
+      this.vy = Math.sin(a) * s;
+      this.life = 1;
+      this.decay = randomFloat(0.018, 0.038);
+      this.size = randomFloat(6, 14);
+      this.angle = a;
+      this.spin = randomFloat(-0.08, 0.08);
+      this.gravity = randomFloat(-0.03, 0.05);
+      this.trailLen = randomFloat(12, 34);
+      return;
+    }
     const a = randomFloat(0, Math.PI * 2);
     const s = randomFloat(1, power);
     this.vx = Math.cos(a) * s;
@@ -164,9 +187,12 @@ class Particle {
 
   update() {
     if (this.segs) { this.life -= this.decay; return; }
+    this.prevX = this.x;
+    this.prevY = this.y;
     this.x += this.vx; this.y += this.vy;
     this.vy += this.gravity;
-    this.vx *= 0.92; this.vy *= 0.92;
+    const drag = this.type === 6 ? 0.9 : 0.92;
+    this.vx *= drag; this.vy *= drag;
     this.life -= this.decay; this.size *= 0.965;
     this.angle += this.spin;
   }
@@ -185,6 +211,7 @@ class Shockwave {
     this.decay = toNumberOr(options.decay, 0.03);
     this.lineWidth = toNumberOr(options.lineWidth, 10);
     this.glow = toNumberOr(options.glow, 0.18);
+    this.flash = toNumberOr(options.flash, 0);
   }
 
   update() { this.r += this.speed; this.alpha -= this.decay; }
@@ -314,8 +341,13 @@ class Player extends Cell {
     const stopRadius = this.r * lerp(0.52, 0.16, sens01);
     if (this.turbo && this.mass > 1.05) {
       speed *= 2.3;
+      const massBeforeTurbo = this.mass;
       const turboDrain = computeTurboMassDrainPerSec(this.mass) * FIXED_STEP;
       this.shrink(turboDrain);
+      const massLostTurbo = Math.max(0, massBeforeTurbo - this.mass);
+      if (massLostTurbo > 0) {
+        this.score = Math.max(0, this.score - massLostTurbo * TURBO_SCORE_DRAIN_PER_MASS);
+      }
     }
 
     if (d > stopRadius) {
@@ -1458,6 +1490,35 @@ class WebAgarGame {
     };
   }
 
+  getVictoryLayout() {
+    const compact = this.isCompactUi();
+    const btnW = compact ? clamp(Math.round(this.width * 0.38), 150, 250) : 240;
+    const btnH = compact ? clamp(Math.round(this.height * 0.07), 44, 56) : 54;
+    const gap = compact ? clamp(Math.round(this.width * 0.03), 14, 26) : 28;
+    const titleY = clamp(Math.round(this.height * 0.28), 120, Math.round(this.height * 0.36));
+    const championY = titleY + (compact ? 44 : 54);
+    const previewR = compact ? 54 : 68;
+    const previewY = championY + (compact ? 72 : 88);
+    const pointsY = previewY + previewR + (compact ? 20 : 24);
+    const rowY = clamp(
+      pointsY + (compact ? 24 : 30),
+      this.height * 0.52,
+      this.height - btnH - 18,
+    );
+    return {
+      compact,
+      btnW,
+      btnH,
+      gap,
+      titleY,
+      championY,
+      previewR,
+      previewY,
+      pointsY,
+      rowY,
+    };
+  }
+
   handleSpectatingClick() {
     if (this.pauseMenuOpen) return;
     this.cycleSpectateTarget(this.mouseX >= this.width / 2 ? 1 : -1);
@@ -1594,74 +1655,173 @@ class WebAgarGame {
 
   spawnParticles(x, y, color, count, power, type = 0) {
     for (let i = 0; i < count; i += 1) this.particles.push(new Particle(x, y, color, power, type));
-    if (this.particles.length > 150) this.particles = this.particles.slice(-150);
+    const maxParticles = this.isMobile ? 210 : 340;
+    if (this.particles.length > maxParticles) this.particles = this.particles.slice(-maxParticles);
+  }
+
+  spawnFirecrackerBurst(x, y, color, intensity = 1, big = false) {
+    const coreColor = normalizeColorArray(color, [180, 220, 255]);
+    const crackColor = blendColors(coreColor, [255, 250, 190], 0.35);
+    const rays = big ? randomInt(16, 24) : randomInt(8, 14);
+    const rocketPower = big ? 26 : 16;
+
+    const start = this.particles.length;
+    this.spawnParticles(x, y, crackColor, Math.round(rays * intensity), rocketPower, 6);
+    for (let i = start; i < this.particles.length; i += 1) {
+      const p = this.particles[i];
+      p.size *= big ? randomFloat(1.15, 1.7) : randomFloat(0.95, 1.35);
+      p.decay *= big ? randomFloat(0.72, 0.98) : randomFloat(0.85, 1.04);
+      p.trailLen *= big ? randomFloat(1.1, 1.5) : randomFloat(0.95, 1.25);
+    }
   }
 
   foodBoom(x, y, color, eaterRadius = 30) {
     const baseColor = normalizeColorArray(color, [120, 220, 255]);
     const brightColor = blendColors(baseColor, [255, 255, 255], 0.45);
     const warmColor = blendColors(baseColor, [255, 216, 120], 0.28);
+    const coolColor = blendColors(baseColor, [114, 180, 255], 0.35);
 
-    const burstCount = randomInt(7, 11);
+    const burstCount = randomInt(14, 22);
     const burstStart = this.particles.length;
-    this.spawnParticles(x, y, baseColor, burstCount, 3.8, 0);
+    this.spawnParticles(x, y, baseColor, burstCount, 6.2, 0);
 
     for (let i = burstStart; i < this.particles.length; i += 1) {
       const particle = this.particles[i];
-      particle.size = randomFloat(6, 13);
-      particle.decay = randomFloat(0.042, 0.072);
-      particle.vx *= randomFloat(1.2, 1.9);
-      particle.vy *= randomFloat(1.1, 1.85);
-      particle.gravity = randomFloat(-0.04, 0.05);
+      particle.size = randomFloat(9, 20);
+      particle.decay = randomFloat(0.03, 0.055);
+      particle.vx *= randomFloat(1.5, 2.55);
+      particle.vy *= randomFloat(1.4, 2.35);
+      particle.gravity = randomFloat(-0.07, 0.085);
     }
 
-    const sparkleCount = randomInt(2, 4);
+    const sparkleCount = randomInt(6, 10);
     const sparkleStart = this.particles.length;
-    this.spawnParticles(x, y, brightColor, sparkleCount, 2.8, 4);
+    this.spawnParticles(x, y, brightColor, sparkleCount, 4.8, 4);
     for (let i = sparkleStart; i < this.particles.length; i += 1) {
       const particle = this.particles[i];
-      particle.size = randomFloat(4, 8);
-      particle.decay = randomFloat(0.05, 0.085);
-      particle.vx *= randomFloat(1.05, 1.5);
-      particle.vy *= randomFloat(1.05, 1.5);
+      particle.size = randomFloat(5, 12);
+      particle.decay = randomFloat(0.038, 0.072);
+      particle.vx *= randomFloat(1.3, 2.1);
+      particle.vy *= randomFloat(1.25, 2.05);
     }
 
-    const waveScale = clamp(eaterRadius / 52, 0.6, 1.35);
+    const arcStart = this.particles.length;
+    this.spawnParticles(x, y, coolColor, randomInt(2, 3), 0, 5);
+    for (let i = arcStart; i < this.particles.length; i += 1) {
+      const particle = this.particles[i];
+      particle.decay = randomFloat(0.12, 0.18);
+    }
+
+    const waveScale = clamp(eaterRadius / 44, 0.75, 1.85);
     this.shockwaves.push(new Shockwave(x, y, brightColor, {
       startRadius: Math.max(1, eaterRadius * 0.04),
-      speed: 4.8 * waveScale,
-      decay: 0.11,
-      alpha: 0.7,
-      lineWidth: 7,
-      glow: 0.24,
+      speed: 6.4 * waveScale,
+      decay: 0.09,
+      alpha: 1.02,
+      lineWidth: 10,
+      glow: 0.4,
+      flash: 0.28,
     }));
     this.shockwaves.push(new Shockwave(x, y, warmColor, {
       startRadius: 0,
-      speed: 3.1 * waveScale,
-      decay: 0.14,
-      alpha: 0.34,
-      lineWidth: 4,
-      glow: 0.14,
+      speed: 4.2 * waveScale,
+      decay: 0.115,
+      alpha: 0.58,
+      lineWidth: 6,
+      glow: 0.24,
+      flash: 0.14,
     }));
+    this.shockwaves.push(new Shockwave(x, y, coolColor, {
+      startRadius: Math.max(0, eaterRadius * 0.03),
+      speed: 5.3 * waveScale,
+      decay: 0.11,
+      alpha: 0.62,
+      lineWidth: 5.8,
+      glow: 0.28,
+      flash: 0.12,
+    }));
+    this.spawnFirecrackerBurst(x, y, warmColor, clamp(eaterRadius / 80, 0.7, 1.6), false);
 
     if (this.soundEnabled && (this.time - this.lastFoodToneTime) > 0.04) {
-      const pitch = 700 + randomFloat(-60, 130);
-      this.playTone(pitch, 0.04, 0.02, 'triangle');
+      const pitch = 690 + randomFloat(-80, 150);
+      this.playTone(pitch, 0.04, 0.03, 'triangle');
+      if (Math.random() < 0.55) this.playTone(pitch * 1.42, 0.03, 0.016, 'sine');
       this.lastFoodToneTime = this.time;
     }
   }
 
   eatExplosion(x, y, color, big = false, type = 0) {
-    this.spawnParticles(x, y, color, big ? 60 : 5, big ? 18 : 5, type);
-    this.shockwaves.push(new Shockwave(x, y, color));
-    if (big) {
-      this.shakeTimer = 20;
-      this.shakeMax = 20;
-      const sw2 = new Shockwave(x, y, [255, 255, 255]);
-      sw2.alpha = 2;
-      this.shockwaves.push(sw2);
+    const baseColor = normalizeColorArray(color, [190, 220, 255]);
+    const brightColor = blendColors(baseColor, [255, 255, 255], 0.5);
+    const plasmaColor = blendColors(baseColor, [170, 116, 255], 0.32);
+
+    const mainCount = big ? randomInt(96, 136) : randomInt(12, 20);
+    const mainStart = this.particles.length;
+    this.spawnParticles(x, y, baseColor, mainCount, big ? 24 : 7.5, type);
+    for (let i = mainStart; i < this.particles.length; i += 1) {
+      const particle = this.particles[i];
+      particle.size *= big ? randomFloat(1.05, 1.7) : randomFloat(0.9, 1.35);
+      particle.decay *= big ? randomFloat(0.7, 1.05) : randomFloat(0.82, 1.12);
+      particle.vx *= big ? randomFloat(1.18, 1.72) : randomFloat(1.1, 1.45);
+      particle.vy *= big ? randomFloat(1.18, 1.72) : randomFloat(1.1, 1.45);
     }
-    if (big && this.soundEnabled) this.playTone(140, 0.11, 0.04, 'sawtooth');
+
+    const sparkleStart = this.particles.length;
+    this.spawnParticles(x, y, brightColor, big ? randomInt(22, 34) : randomInt(4, 7), big ? 12 : 4.8, 4);
+    for (let i = sparkleStart; i < this.particles.length; i += 1) {
+      const particle = this.particles[i];
+      particle.size = randomFloat(big ? 7 : 4.2, big ? 15 : 9);
+      particle.decay = randomFloat(big ? 0.02 : 0.03, big ? 0.04 : 0.058);
+    }
+
+    const arcStart = this.particles.length;
+    this.spawnParticles(x, y, plasmaColor, big ? randomInt(6, 10) : randomInt(1, 3), 0, 5);
+    for (let i = arcStart; i < this.particles.length; i += 1) {
+      const particle = this.particles[i];
+      particle.decay = randomFloat(big ? 0.07 : 0.11, big ? 0.12 : 0.18);
+    }
+
+    const baseWaveSpeed = big ? 12.6 : 8.8;
+    this.shockwaves.push(new Shockwave(x, y, baseColor, {
+      startRadius: 0,
+      speed: baseWaveSpeed,
+      decay: big ? 0.024 : 0.046,
+      alpha: big ? 1.3 : 0.82,
+      lineWidth: big ? 14 : 8.5,
+      glow: big ? 0.42 : 0.28,
+      flash: big ? 0.52 : 0.22,
+    }));
+    this.shockwaves.push(new Shockwave(x, y, brightColor, {
+      startRadius: 0,
+      speed: baseWaveSpeed * 0.86,
+      decay: big ? 0.028 : 0.052,
+      alpha: big ? 0.98 : 0.66,
+      lineWidth: big ? 10 : 5.8,
+      glow: big ? 0.32 : 0.22,
+      flash: big ? 0.3 : 0.14,
+    }));
+    if (big) {
+      this.shockwaves.push(new Shockwave(x, y, plasmaColor, {
+        startRadius: 0,
+        speed: baseWaveSpeed * 0.68,
+        decay: 0.03,
+        alpha: 0.7,
+        lineWidth: 7.4,
+        glow: 0.26,
+        flash: 0.2,
+      }));
+      this.shakeTimer = 30;
+      this.shakeMax = 30;
+    }
+    this.spawnFirecrackerBurst(x, y, plasmaColor, big ? 1.7 : 1.0, big);
+    if (this.soundEnabled) {
+      if (big) {
+        this.playTone(140, 0.11, 0.04, 'sawtooth');
+        this.playTone(220, 0.08, 0.018, 'triangle');
+      } else {
+        this.playTone(230, 0.045, 0.014, 'triangle');
+      }
+    }
   }
 
   triggerOfflineDefeat(killerName = 'INIMIGO') {
@@ -1782,14 +1942,14 @@ class WebAgarGame {
       let eaten = false;
       if (dist(food.x, food.y, this.player.x, this.player.y) < this.player.r) {
         this.foodBoom(food.x, food.y, food.color, this.player.r);
-        this.player.grow(FOOD_MASS_GAIN);
+        this.player.grow(computeFoodMassGain(this.player.mass));
         this.player.score += 10;
         eaten = true;
       } else {
         for (const bot of this.bots) {
           if (dist(food.x, food.y, bot.x, bot.y) < bot.r) {
             this.spawnParticles(food.x, food.y, food.color, 1, 1);
-            bot.grow(FOOD_MASS_GAIN);
+            bot.grow(computeFoodMassGain(bot.mass));
             bot.score += 10;
             eaten = true;
             break;
@@ -1870,15 +2030,15 @@ class WebAgarGame {
 
     if (!isSpectating && !paused) this.player.update(wx, wy, this.inputSensitivity);
 
-    if (!isSpectating && !paused && this.player.turbo && this.player.mass > 1.05 && Math.random() < 0.92) {
-      this.spawnParticles(this.player.x, this.player.y, [0, 180, 255], 2, 0, 4);
+    if (!isSpectating && !paused && this.player.turbo && this.player.mass > 1.05 && Math.random() < 0.98) {
+      this.spawnParticles(this.player.x, this.player.y, [0, 180, 255], 3, 0, 4);
       if (this.particles.length > 0) {
         const p = this.particles[this.particles.length - 1];
-        p.size = randomFloat(16, 34);
-        p.decay = 0.04;
+        p.size = randomFloat(20, 42);
+        p.decay = 0.035;
       }
-      if (Math.random() < 0.75) this.spawnParticles(this.player.x, this.player.y, [180, 100, 255], 1, 0, 5);
-      if (Math.random() < 0.5) this.spawnParticles(this.player.x, this.player.y, [120, 220, 255], 1, 0, 5);
+      if (Math.random() < 0.9) this.spawnParticles(this.player.x, this.player.y, [180, 100, 255], 1, 0, 5);
+      if (Math.random() < 0.78) this.spawnParticles(this.player.x, this.player.y, [120, 220, 255], 1, 0, 5);
     }
 
     if (!paused) {
@@ -1987,15 +2147,15 @@ class WebAgarGame {
       this.connectionStatus = 'Aguardando sincronizacao...';
     }
 
-    if (!paused && this.state === 'PLAYING' && this.player.turbo && this.player.mass > 1.05 && Math.random() < 0.92) {
-      this.spawnParticles(this.player.x, this.player.y, [0, 180, 255], 2, 0, 4);
+    if (!paused && this.state === 'PLAYING' && this.player.turbo && this.player.mass > 1.05 && Math.random() < 0.98) {
+      this.spawnParticles(this.player.x, this.player.y, [0, 180, 255], 3, 0, 4);
       if (this.particles.length > 0) {
         const p = this.particles[this.particles.length - 1];
-        p.size = randomFloat(16, 34);
-        p.decay = 0.04;
+        p.size = randomFloat(20, 42);
+        p.decay = 0.035;
       }
-      if (Math.random() < 0.75) this.spawnParticles(this.player.x, this.player.y, [180, 100, 255], 1, 0, 5);
-      if (Math.random() < 0.5) this.spawnParticles(this.player.x, this.player.y, [120, 220, 255], 1, 0, 5);
+      if (Math.random() < 0.9) this.spawnParticles(this.player.x, this.player.y, [180, 100, 255], 1, 0, 5);
+      if (Math.random() < 0.78) this.spawnParticles(this.player.x, this.player.y, [120, 220, 255], 1, 0, 5);
     }
 
     this.foods = this.remoteFoods;
@@ -2149,7 +2309,7 @@ class WebAgarGame {
     const [sx, sy] = this.worldToScreen(sw.x, sw.y);
     const r = sw.r * this.cam.zoom;
     const ringWidth = Math.max(1, (sw.lineWidth || 10) * this.cam.zoom);
-    const glowStrength = clamp(sw.glow ?? 0.18, 0, 0.6);
+    const glowStrength = clamp(sw.glow ?? 0.18, 0, 0.8);
     const innerR = Math.max(0, r - ringWidth * 0.7);
     const outerR = r + ringWidth * 1.9;
 
@@ -2177,6 +2337,29 @@ class WebAgarGame {
     this.ctx.arc(sx, sy, Math.max(0, r - ringWidth * 0.35), 0, Math.PI * 2);
     this.ctx.stroke();
 
+    if (sw.flash > 0 && sw.alpha > 0.02) {
+      const flashRadius = Math.max(10, r * 0.5 + ringWidth * 1.6);
+      const flash = this.ctx.createRadialGradient(sx, sy, 0, sx, sy, flashRadius);
+      flash.addColorStop(0, colorToCss([255, 255, 255], sw.alpha * sw.flash * 0.95));
+      flash.addColorStop(0.45, colorToCss(sw.color, sw.alpha * sw.flash * 0.58));
+      flash.addColorStop(1, colorToCss(sw.color, 0));
+      this.ctx.fillStyle = flash;
+      this.ctx.beginPath();
+      this.ctx.arc(sx, sy, flashRadius, 0, Math.PI * 2);
+      this.ctx.fill();
+    }
+
+    const dashRadius = Math.max(0, r + ringWidth * 0.32);
+    const dashLen = Math.max(3, ringWidth * 1.1);
+    this.ctx.setLineDash([dashLen, dashLen * 0.9]);
+    this.ctx.lineDashOffset = -(this.time * 120 + sw.r * 0.2);
+    this.ctx.strokeStyle = colorToCss(sw.color, sw.alpha * 0.36);
+    this.ctx.lineWidth = Math.max(0.8, ringWidth * 0.22);
+    this.ctx.beginPath();
+    this.ctx.arc(sx, sy, dashRadius, 0, Math.PI * 2);
+    this.ctx.stroke();
+    this.ctx.setLineDash([]);
+
     this.ctx.restore();
   }
   drawParticles() {
@@ -2185,8 +2368,9 @@ class WebAgarGame {
     for (const p of this.particles) {
       const alpha = clamp(p.life, 0, 1);
       if (p.segs) {
-        this.ctx.strokeStyle = colorToCss(p.color, alpha);
-        this.ctx.lineWidth = 1.5;
+        this.ctx.lineCap = 'round';
+        this.ctx.strokeStyle = colorToCss(p.color, alpha * 0.55);
+        this.ctx.lineWidth = 2.3;
         this.ctx.beginPath();
         for (const seg of p.segs) {
           const [x1, y1] = this.worldToScreen(seg[0], seg[1]);
@@ -2195,9 +2379,16 @@ class WebAgarGame {
           this.ctx.lineTo(x2, y2);
         }
         this.ctx.stroke();
+        this.ctx.strokeStyle = colorToCss([255, 255, 255], alpha * 0.8);
+        this.ctx.lineWidth = 1.05;
+        this.ctx.stroke();
         continue;
       }
       const [sx, sy] = this.worldToScreen(p.x, p.y);
+      const [spx, spy] = this.worldToScreen(
+        Number.isFinite(p.prevX) ? p.prevX : p.x,
+        Number.isFinite(p.prevY) ? p.prevY : p.y,
+      );
       const size = Math.max(0.4, p.size * this.cam.zoom);
       this.ctx.save();
       this.ctx.translate(sx, sy);
@@ -2211,7 +2402,52 @@ class WebAgarGame {
       this.ctx.beginPath();
       this.ctx.arc(0, 0, size, 0, Math.PI * 2);
       this.ctx.fill();
+
+      const coreR = Math.max(0.45, size * 0.34);
+      this.ctx.fillStyle = colorToCss([255, 255, 255], alpha * 0.62);
+      this.ctx.beginPath();
+      this.ctx.arc(0, 0, coreR, 0, Math.PI * 2);
+      this.ctx.fill();
+
+      if (p.type === 4 && size > 1.4) {
+        this.ctx.strokeStyle = colorToCss([230, 246, 255], alpha * 0.52);
+        this.ctx.lineWidth = Math.max(0.7, size * 0.12);
+        this.ctx.beginPath();
+        this.ctx.moveTo(-size * 0.8, 0);
+        this.ctx.lineTo(size * 0.8, 0);
+        this.ctx.moveTo(0, -size * 0.8);
+        this.ctx.lineTo(0, size * 0.8);
+        this.ctx.stroke();
+      }
       this.ctx.restore();
+
+      if (p.type === 6) {
+        const dx = sx - spx;
+        const dy = sy - spy;
+        const len = Math.hypot(dx, dy) + 0.001;
+        const ux = dx / len;
+        const uy = dy / len;
+        const tailLen = Math.max(8, (p.trailLen || 16) * this.cam.zoom);
+        const tx = sx - ux * tailLen;
+        const ty = sy - uy * tailLen;
+
+        const trail = this.ctx.createLinearGradient(tx, ty, sx, sy);
+        trail.addColorStop(0, colorToCss(p.color, 0));
+        trail.addColorStop(0.45, colorToCss(p.color, alpha * 0.45));
+        trail.addColorStop(1, colorToCss([255, 250, 220], alpha * 0.95));
+        this.ctx.strokeStyle = trail;
+        this.ctx.lineCap = 'round';
+        this.ctx.lineWidth = Math.max(1, size * 0.28);
+        this.ctx.beginPath();
+        this.ctx.moveTo(tx, ty);
+        this.ctx.lineTo(sx, sy);
+        this.ctx.stroke();
+
+        this.ctx.fillStyle = colorToCss([255, 248, 220], alpha * 0.95);
+        this.ctx.beginPath();
+        this.ctx.arc(sx, sy, Math.max(0.9, size * 0.22), 0, Math.PI * 2);
+        this.ctx.fill();
+      }
     }
     this.ctx.restore();
   }
@@ -2464,7 +2700,7 @@ class WebAgarGame {
       this.ctx.font = `700 ${compact ? 11 : 12}px ${UI_FONT_FAMILY}`;
       const spectBase = compact ? 58 : 64;
       const spectStep = compact ? 16 : 18;
-      this.ctx.fillText(`ULTIMO SCORE: ${this.player.score}`, boxX + 14, boxY + spectBase);
+      this.ctx.fillText(`ULTIMO SCORE: ${Math.max(0, Math.round(this.player.score))}`, boxX + 14, boxY + spectBase);
       this.ctx.fillText(`ALVO: ${this.spectateTargetName || 'AUTO'}`, boxX + 14, boxY + spectBase + spectStep);
       if (this.killerName) this.ctx.fillText(`DERROTADO POR: ${this.killerName}`, boxX + 14, boxY + spectBase + spectStep * 2);
       this.ctx.fillText(`SOM: ${this.soundEnabled ? 'ON' : 'OFF'} | SENS: ${this.inputSensitivity.toFixed(2)}x`, boxX + 14, boxY + boxH - 20);
@@ -2474,7 +2710,7 @@ class WebAgarGame {
       this.ctx.fillText('PONTOS', boxX + 14, boxY + 30);
       this.ctx.fillStyle = 'rgb(233, 251, 255)';
       this.ctx.font = `900 ${compact ? 28 : 34}px ${UI_FONT_FAMILY}`;
-      this.ctx.fillText(String(this.player.score), boxX + 14, boxY + 44);
+      this.ctx.fillText(String(Math.max(0, Math.round(this.player.score))), boxX + 14, boxY + 44);
       this.ctx.fillStyle = 'rgba(150, 238, 201, 0.95)';
       this.ctx.font = `700 ${compact ? 12 : 13}px ${UI_FONT_FAMILY}`;
       this.ctx.fillText(`MASSA: ${this.player.mass.toFixed(1)}`, boxX + 14, boxY + (compact ? 88 : 92));
@@ -3089,24 +3325,23 @@ class WebAgarGame {
     this.ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
     this.ctx.fillRect(0, 0, this.width, this.height);
 
-    const layout = this.getGameOverLayout();
+    const layout = this.getVictoryLayout();
     const compact = layout.compact;
     const cx = this.width / 2;
-    const cy = this.height / 2;
 
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
     this.ctx.fillStyle = 'rgb(118, 255, 214)';
-    this.ctx.font = `900 ${compact ? 42 : 62}px ${TITLE_FONT_FAMILY}`;
-    this.ctx.fillText('VITORIA', cx, cy - (compact ? 104 : 124));
+    this.ctx.font = `900 ${compact ? 50 : 66}px ${TITLE_FONT_FAMILY}`;
+    this.ctx.fillText('VITORIA', cx, layout.titleY);
 
     const winnerName = (this.winnerName || 'VOCE').slice(0, 16);
     this.ctx.fillStyle = 'rgba(228, 244, 255, 0.98)';
-    this.ctx.font = `800 ${compact ? 16 : 22}px ${UI_FONT_FAMILY}`;
-    this.ctx.fillText(`CAMPEAO: ${winnerName}`, cx, cy - (compact ? 62 : 74));
+    this.ctx.font = `800 ${compact ? 18 : 24}px ${UI_FONT_FAMILY}`;
+    this.ctx.fillText(`CAMPEAO: ${winnerName}`, cx, layout.championY);
 
-    const previewR = compact ? 46 : 62;
-    const previewY = cy - (compact ? 4 : 12);
+    const previewR = layout.previewR;
+    const previewY = layout.previewY;
     const winnerImage = (this.winnerCustomImage && this.winnerCustomImage.complete && this.winnerCustomImage.naturalWidth > 0)
       ? this.winnerCustomImage
       : this.getSkinImageByIndex(this.winnerSkinId);
@@ -3144,8 +3379,8 @@ class WebAgarGame {
     this.ctx.stroke();
 
     this.ctx.fillStyle = 'rgba(190, 226, 246, 0.95)';
-    this.ctx.font = `700 ${compact ? 13 : 16}px ${UI_FONT_FAMILY}`;
-    this.ctx.fillText(`PONTOS: ${this.player.score}`, cx, cy + (compact ? 56 : 58));
+    this.ctx.font = `700 ${compact ? 16 : 18}px ${UI_FONT_FAMILY}`;
+    this.ctx.fillText(`PONTOS: ${Math.max(0, Math.round(this.player.score))}`, cx, layout.pointsY);
 
     const btnW = layout.btnW;
     const btnH = layout.btnH;
