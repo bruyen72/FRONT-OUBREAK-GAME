@@ -698,6 +698,72 @@ class WebAgarGame {
     };
   }
 
+  normalizeIncomingFxEvent(event) {
+    if (!event || typeof event !== 'object') return null;
+    const kindRaw = String(firstDefined(event.kind, event.fxType, event.event, event.fx, '')).toLowerCase();
+    const kind = (kindRaw === 'food' || kindRaw === 'eat') ? kindRaw : '';
+    if (!kind) return null;
+
+    const x = toNumberOr(firstDefined(event.x, event.px), Number.NaN);
+    const y = toNumberOr(firstDefined(event.y, event.py), Number.NaN);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+    const fallbackColor = kind === 'food' ? FOOD_COLORS[0] : [220, 220, 255];
+    const color = normalizeColorArray(firstDefined(event.color, event.c, event.rgb), fallbackColor);
+
+    return {
+      kind,
+      x: clamp(x, 0, WORLD),
+      y: clamp(y, 0, WORLD),
+      color,
+      eaterId: String(firstDefined(event.eaterId, event.by, event.killerId, '')),
+      eaterRadius: Math.max(0, toNumberOr(firstDefined(event.eaterRadius, event.eaterR, event.r), 0)),
+      skinId: clamp(Math.round(toNumberOr(firstDefined(event.skinId, event.type), 0)), 0, PLAYER_SKINS.length - 1),
+      big: firstDefined(event.big, true) !== false,
+    };
+  }
+
+  applyOnlineServerEffects(fxEvents, nextEntities = []) {
+    if (this.state !== 'PLAYING' || this.pauseMenuOpen) return;
+    if (!Array.isArray(fxEvents) || fxEvents.length === 0) return;
+
+    const entityById = new Map();
+    for (const entity of nextEntities) {
+      if (!entity) continue;
+      const id = String(entity.id || '');
+      if (!id) continue;
+      entityById.set(id, entity);
+    }
+
+    const maxFx = this.isMobile ? 36 : 62;
+    let applied = 0;
+    for (const fx of fxEvents) {
+      if (applied >= maxFx) break;
+      if (!fx) continue;
+
+      if (fx.kind === 'food') {
+        const eater = fx.eaterId ? entityById.get(fx.eaterId) : null;
+        const eaterRadius = fx.eaterRadius > 0
+          ? fx.eaterRadius
+          : Math.max(18, toNumberOr(eater?.r, this.player.r) || 30);
+        this.foodBoom(fx.x, fx.y, fx.color, eaterRadius);
+        applied += 1;
+        continue;
+      }
+
+      if (fx.kind === 'eat') {
+        this.eatExplosion(
+          fx.x,
+          fx.y,
+          fx.color,
+          fx.big,
+          Number.isFinite(fx.skinId) ? fx.skinId : 0,
+        );
+        applied += 1;
+      }
+    }
+  }
+
   applyOnlineVisualEffects(prevFoods, nextFoods, prevEntities, nextEntities, myId = '') {
     if (this.state !== 'PLAYING' || this.pauseMenuOpen) return;
     if (!Array.isArray(prevFoods) || !Array.isArray(nextFoods)) return;
@@ -830,6 +896,10 @@ class WebAgarGame {
       const botsFromServer = toEntityArray(firstDefined(payload.bots, payload.b));
       const foodsFromServer = firstDefined(payload.foods, payload.f);
       const eatenFromServer = toEntityArray(payload.eaten);
+      const fxFromServerRaw = toEntityArray(firstDefined(payload.fx, payload.effects, payload.events, []));
+      const incomingFx = fxFromServerRaw
+        .map((event) => this.normalizeIncomingFxEvent(event))
+        .filter(Boolean);
 
       // Map incoming entities (with targets)
       const incomingPlayers = playersFromServer
@@ -867,12 +937,16 @@ class WebAgarGame {
       }
 
       const currentSocketId = this.mySocketId || socket.id || '';
-      if (this.onlineFxPrimed) {
+      const mergedIncomingEntities = [...incomingPlayers, ...incomingBots];
+      if (incomingFx.length > 0) {
+        this.applyOnlineServerEffects(incomingFx, mergedIncomingEntities);
+        this.onlineFxPrimed = true;
+      } else if (this.onlineFxPrimed) {
         this.applyOnlineVisualEffects(
           prevFoods,
           this.remoteFoods,
           prevEntities,
-          [...incomingPlayers, ...incomingBots],
+          mergedIncomingEntities,
           currentSocketId,
         );
       } else {
