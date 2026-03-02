@@ -639,7 +639,8 @@ class WebAgarGame {
 
     const rawId = firstDefined(entity.id, entity.socketId, entity.sid, entity.playerId, '');
     const id = String(rawId || '');
-    const skinId = clamp(Math.round(toNumberOr(firstDefined(entity.skinId, entity.type, entity.skin), 0)), 0, PLAYER_SKINS.length - 1);
+    const skinId = clamp(Math.round(toNumberOr(firstDefined(entity.skinId, entity.skin, entity.type), 0)), 0, PLAYER_SKINS.length - 1);
+    const effectType = clamp(Math.round(toNumberOr(firstDefined(entity.type, entity.effectType, skinId), 0)), 0, 8);
     const skin = PLAYER_SKINS[skinId] || PLAYER_SKINS[0];
 
     const rawMass = Math.max(1, toNumberOr(firstDefined(entity.mass, entity.m), 1));
@@ -663,7 +664,7 @@ class WebAgarGame {
       isBot: Boolean(firstDefined(entity.isBot, entity.bot, isBotFallback)),
       name: finalName,
       skinId,
-      type: skinId,
+      type: effectType,
       color1,
       color2,
       x,
@@ -717,6 +718,7 @@ class WebAgarGame {
       y: clamp(y, 0, WORLD),
       color,
       eaterId: String(firstDefined(event.eaterId, event.by, event.killerId, '')),
+      eaterIsBot: Boolean(firstDefined(event.eaterIsBot, event.byBot, false)),
       actorId: String(firstDefined(event.actorId, event.id, event.playerId, '')),
       eaterRadius: Math.max(0, toNumberOr(firstDefined(event.eaterRadius, event.eaterR, event.r), 0)),
       mass: Math.max(0, toNumberOr(firstDefined(event.mass, event.m), 0)),
@@ -749,7 +751,9 @@ class WebAgarGame {
         const eaterRadius = fx.eaterRadius > 0
           ? fx.eaterRadius
           : Math.max(18, toNumberOr(eater?.r, this.player.r) || 30);
-        this.foodBoom(fx.x, fx.y, fx.color, eaterRadius);
+        const eaterIsBot = fx.eaterIsBot || Boolean(eater?.isBot);
+        if (eaterIsBot) this.spawnParticles(fx.x, fx.y, fx.color, 1, 1, 1);
+        else this.foodBoom(fx.x, fx.y, fx.color, eaterRadius);
         applied += 1;
         continue;
       }
